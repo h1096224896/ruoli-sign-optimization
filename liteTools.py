@@ -525,8 +525,10 @@ class RT:
         '''随机暂停一段时间'''
         if len(timeRange) != 2:
             raise Exception("时间范围应包含开始与结束，列表长度应为2")
-        a = timeRange[0]
-        b = timeRange[1]
+        # a = timeRange[0]
+        # b = timeRange[1]
+        a = 1
+        b = 3
         sleepTime = random.uniform(a, b)
         LL.log(0, '程序正在暂停%.3f秒' % sleepTime)
         time.sleep(sleepTime)
