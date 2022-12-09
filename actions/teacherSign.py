@@ -1,17 +1,20 @@
 import json
 import re
-from requests_toolbelt import MultipartEncoder
 
-from todayLoginService import TodayLoginService
-from liteTools import LL, DT, RT, MT, ST, SuperString, TaskError, CpdailyTools
+from liteTools import LL, DT, RT, SuperString, TaskError, CpdailyTools
 
 
 class teacherSign:
     # 初始化政工签到类
-    def __init__(self, userInfo, userSession, userHost):
-        self.session = userSession
-        self.host = userHost
-        self.userInfo = userInfo
+    def __init__(self, signTask_):
+        '''
+        :params signTask_: handler.SignTask类
+        '''
+        self.signTask_ = signTask_
+        self.userInfo = signTask_.config
+        self.session = signTask_.session
+        self.host = signTask_.host
+
         self.taskInfo = None
         self.form = {}
     # 获取未签到任务
@@ -26,7 +29,7 @@ class teacherSign:
         # 第二次请求接口，真正的拿到具体任务
         res = self.session.post(url, headers=headers,
                                 data=json.dumps({}), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         if len(res['datas']['unSignedTasks']) < 1:
             raise TaskError('当前暂时没有未签到的任务哦！', 400)
         LL.log(1, '未签到的政工签到', res['datas'])
@@ -44,7 +47,7 @@ class teacherSign:
         headers['Content-Type'] = 'application/json'
         res = self.session.post(url, headers=headers, data=json.dumps(
             self.taskInfo), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         LL.log(1, '具体政工签到任务', res['datas'])
         self.task = res['datas']
         return self.task
@@ -128,10 +131,10 @@ class teacherSign:
         LL.log(1, '提交查寝数据', 'data', self.submitData, 'header', headers)
         res = self.session.post(f'{self.host}wec-counselor-teacher-sign-apps/teacher/sign/submitSign', headers=headers,
                                 data=json.dumps(self.submitData), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         # 检查签到情况
         if self.getDetailTask()['signTime']:
-            self.userInfo['taskStatus'].code = 101
+            self.signTask_.code = 101
         else:
             raise TaskError(f'提交表单返回『{res}』且任务状态仍是未签到', 300)
         return res['message']

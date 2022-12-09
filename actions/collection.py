@@ -1,18 +1,20 @@
 import json
 import re
-import os
-from requests_toolbelt import MultipartEncoder
 
-from todayLoginService import TodayLoginService
-from liteTools import LL, DT, RT, MT, ST, SuperString, TaskError, CpdailyTools
+from liteTools import LL, DT, RT, SuperString, TaskError, CpdailyTools
 
 
 class Collection:
     # 初始化信息收集类
-    def __init__(self, userInfo, userSession, userHost):
-        self.session = userSession
-        self.host = userHost
-        self.userInfo = userInfo
+    def __init__(self, signTask_):
+        '''
+        :params signTask_: handler.SignTask类
+        '''
+        self.signTask_ = signTask_
+        self.userInfo = signTask_.config
+        self.session = signTask_.session
+        self.host = signTask_.host
+
         self.task = None
         self.wid = None
         self.formWid = None
@@ -50,7 +52,7 @@ class Collection:
             # 获取**任务列表**数据
             res = self.session.post(url, headers=headers,
                                     data=json.dumps(pageReq), verify=False)
-            res = DT.resJsonEncode(res)
+            res = res.json()
             LL.log(1, f"获取到的第{pageNumber}页任务列表", res)
             # 在**首页**获取历史信息收集**总数**
             if pageNumber == 1:
@@ -86,7 +88,7 @@ class Collection:
                           "instanceWid": self.instanceWid}
                 res = self.session.post(
                     url, headers=headers, data=json.dumps(params), verify=False)
-                res = DT.resJsonEncode(res)
+                res = res.json()
                 LL.log(1, '查询任务详情返回结果', res['datas'])
                 try:
                     self.schoolTaskWid = res['datas']['collector']['schoolTaskWid']
@@ -96,10 +98,10 @@ class Collection:
                 # 获取任务表单
                 url = f'{self.host}wec-counselor-collector-apps/stu/collector/getFormFields'
                 params = {"pageSize": 9999, "pageNumber": 1,
-                          "formWid": self.formWid, "collectorWid": self.wid}
+                          "formWid": self.formWid, "collectorWid": self.wid, "instanceWid": self.instanceWid}
                 res = self.session.post(
                     url, headers=headers, data=json.dumps(params), verify=False)
-                res = DT.resJsonEncode(res)
+                res = res.json()
                 LL.log(1, '查询任务表单返回结果', res['datas'])
                 self.task = res['datas']['rows']
                 return
@@ -123,7 +125,7 @@ class Collection:
             # 获取**任务列表**数据
             res = self.session.post(url, headers=headers,
                                     data=json.dumps(pageReq), verify=False)
-            res = DT.resJsonEncode(res)
+            res = res.json()
             LL.log(1, f"获取到第{pageNumber}页历史信息收集数据", res)
             # 在**首页**获取历史信息收集**总数**
             if pageNumber == 1:
@@ -152,7 +154,7 @@ class Collection:
                                "collectorWid": historyWid, "instanceWid": historyInstanceWid}
                     res = self.session.post(url, headers=headers, data=json.dumps(formReq),
                                             verify=False)
-                    res = DT.resJsonEncode(res)
+                    res = res.json()
                     # 模拟请求
                     url = f'{self.host}wec-counselor-collector-apps/stu/collector/queryNotice'
                     self.session.post(url, headers=headers,
@@ -226,17 +228,21 @@ class Collection:
             taskLen = len(self.task)
             userFormList = self.userInfo['forms']
             userFormList = [u['form'] for u in userFormList]
+            # 检查是否每一项都有"number"项
+            useNumberFlag = False not in [
+                ("number" in u) for u in userFormList]
+            # 检查是否每一项都有"isNeed"项
+            useIsNeedFlag = False not in [
+                ("isNeed" in u) for u in userFormList]
+            if not (useNumberFlag or useIsNeedFlag):
+                raise TaskError(
+                    "配置文件填写错误: \n信息收集表单(forms)中的每一项都需要用「number」标志题号", 301)
             # 如果是用"number"控制表单填报(number是题号, 1开始), 转换为用"isNeed"控制表单填报
-            userFormSortIndex = {}
-            for u in userFormList:
-                # 检查是否每一项都有"number"项
-                if "number" in u:
+            if useNumberFlag:
+                userFormSortIndex = {}
+                for u in userFormList:
                     userFormSortIndex[u['number']] = {
                         "title": u['title'], "value": u['value'], "isNeed": 1}
-                else:
-                    break
-            else:
-                '''如果每一项都有"number"项'''
                 userFormList = []
                 for i in range(taskLen):
                     userFormList.append(
@@ -292,7 +298,8 @@ class Collection:
                     elif formItem['fieldType'] == '3':
                         # 定义单选框的wid
                         itemWidArr = []
-                        userItems = [SuperString(i)for i in userForm['value']]
+                        userItems = DT.formatStrList(
+                            [i for i in userForm['value']], True)
                         # 多选也需要移除多余的选项
                         for fieldItem in formItem['fieldItems'].copy():
                             # 查看该表单项在不在用户配置的选项中
@@ -309,10 +316,12 @@ class Collection:
                             )
                         formItem['value'] = ','.join(itemWidArr)
                     # 图片类型
-                    elif formItem['fieldType'] in ('4', '16'):
+                    elif formItem['fieldType'] in ('4', '16', '24', '25'):
                         '''
                         4: 上传图片
                         16: 手写板
+                        24: 健康码截图(先上传后识别)
+                        25: 行程卡截图(先上传后识别)
                         '''
                         # 序列/字符串转列表
                         dirList = DT.formatStrList(userForm['value'])
@@ -384,6 +393,11 @@ class Collection:
 
     def getSubmitExtension(self):
         '''生成各种额外参数'''
+
+        # 验证码识别
+        self.form.update(CpdailyTools.handleCaptcha(
+            self.host, self.session, self.userInfo['deviceId'], signType="collector"))
+
         extension = {
             "lon": self.form['longitude'],
             "lat": self.form['latitude'],
@@ -438,16 +452,16 @@ class Collection:
                'headers', headers, 'params', self.submitData)
         data = self.session.post(
             submitUrl, headers=headers, data=json.dumps(self.submitData), verify=False)
-        data = DT.resJsonEncode(data)
+        data = data.json()
         # 检查签到完成
         url = f'{self.host}wec-counselor-collector-apps/stu/collector/detailCollector'
         params = {"collectorWid": self.wid,
                   "instanceWid": self.instanceWid}
         res = self.session.post(
             url, headers=headers, data=json.dumps(params), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         if res['datas']['collector']['isUserSubmit'] == 1:
-            self.userInfo['taskStatus'].code = 101
+            self.signTask_.code = 101
         else:
             raise TaskError(f'提交表单返回『{data}』且任务状态仍是未签到', 300, self.taskName)
         return '[%s]%s' % (data['message'], self.taskName)

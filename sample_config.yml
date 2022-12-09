@@ -4,9 +4,10 @@ notion: 代理设置、正则匹配、获取历史签到、二维码签到等功
 # ======================================================================
 # 全局设置
 # ======================================================================
+apple: "" # 你发现了这里有一个苹果, 但不要告诉别人(起码不要发到群里面)。如果太多人找到了苹果, 你就没有苹果了。就如那句名言『Suchen Sie es in der ersten Wurst(苹果只留予你)』
 locationOffsetRange: 50 # 签到坐标随机偏移范围(单位：米)(可以为0)
 maxTry: 1 # 最大尝试次数
-logDir: "log/" # 日志保存地址
+logDir: "_log/" # 日志保存地址
 delay: [5, 10] # 多用户时，各用户之间任务执行延迟(时间范围可以使用浮点数)
 captcha: # 图片验证码识别(不需要可以不填)
   tencentSecretId: "" # 腾讯云OCR
@@ -19,8 +20,10 @@ sendMessage: # 推送函数的整体运行情况(不需要的项目不用填，�
   qmsg_key: "" # qmsg推送的key
   qmsg_qq: "" # qmsg推送的qq号
   qmsg_isGroup: 0 # 此qq号是否为群(是的话填1，反之为0)
-  pushplus_parameters: "" # pushplus参数，填入令牌(token)即可推送。也可以填入"token=xxx&topic=xxx"形式自定义更多参数
-  pushplus_isNew: False # False使用旧版pushplus(https://pushplus.hxtrip.com)，True使用新版pushplus(https://www.pushplus.plus)
+  pushplus_parameters: "" # pushplus(https://www.pushplus.plus)参数，填入令牌(token)即可推送。也可以填入"token=xxx&topic=xxx"形式自定义更多参数
+  severchan_sendkey: "" # severchan(https://sct.ftqq.com/)参数，填入令牌(SendKey)即可推送, 暂不支持自定义参数。
+  gotify_url: "" # Gotify 服务器地址，Gotify 是一个可自行搭建的推送服务，可前往这里找到安装教程：https://gotify.net/docs/install
+  gotify_apptoken: "" # Gotify Application Token（注意不是 Client Token）
   smtp_host: "smtp.qq.com" # SMTP服务器域名
   smtp_user: "*****@qq.com" # SMTP服务器用户名
   smtp_key: "" # SMTP服务器密钥
@@ -114,7 +117,8 @@ users: #!!!!!别误删了这一行!!!!!
     lat: 39.910966 # 纬度
     address: "北京市东城区天安门广场中央" # 地址信息
 
-  - # 政工签到模板=======
+  - # !!!!!!!!!!配置多用户时不要遗漏这一行("- "代表数组里一项的开始)!!!!!!!!!!
+    # 政工签到模板=======
     # 通用必填项-------
     type: 4 # 任务类型[信息收集:0|签到:1|查寝:2|教师工作日志:3|政工签到:4]
     schoolName: 五道口职业技术学院 # 学校全称

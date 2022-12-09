@@ -1,4 +1,14 @@
 .idea
-__pycache__
-log/
 */__pycache__
+__pycache__/
+venv
+
+_log/
+_private/
+_userdefined*/
+log/
+private/
+userdefined*/
+ruoli-sign-optimization.zip
+ruoli-sign-optimization.7z
+config.yml

@@ -1,18 +1,20 @@
 import json
 import re
 
-from requests_toolbelt import MultipartEncoder
-
-from todayLoginService import TodayLoginService
-from liteTools import LL, DT, RT, MT, ST, SuperString, TaskError, CpdailyTools
+from liteTools import LL, DT, RT, MT, SuperString, TaskError, CpdailyTools
 
 
 class AutoSign:
     # 初始化签到类
-    def __init__(self, userInfo, userSession, userHost):
-        self.session = userSession
-        self.host = userHost
-        self.userInfo = userInfo
+    def __init__(self, signTask_):
+        '''
+        :params signTask_: handler.SignTask类
+        '''
+        self.signTask_ = signTask_
+        self.userInfo = signTask_.config
+        self.session = signTask_.session
+        self.host = signTask_.host
+
         self.taskInfo = None
         self.task = None
         self.form = {}
@@ -31,7 +33,7 @@ class AutoSign:
         # 第二次请求接口，真正的拿到具体任务
         res = self.session.post(url, headers=headers,
                                 data=json.dumps({}), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         LL.log(1, '返回的列表数据', res['datas'])
 
         # 获取到的任务总表
@@ -81,7 +83,8 @@ class AutoSign:
         url = f'{self.host}wec-counselor-sign-apps/stu/sign/getStuIntervalMonths'
         res = self.session.post(url, headers=headers,
                                 data=json.dumps({}), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
+        LL.log(1, "历史签到月历", res)
         monthList = [i['id'] for i in res['datas']['rows']]
         monthList.sort(reverse=True)  # 降序排序月份
 
@@ -92,7 +95,8 @@ class AutoSign:
             url = f'{self.host}wec-counselor-sign-apps/stu/sign/getStuSignInfosByWeekMonth'
             res = self.session.post(
                 url, headers=headers, data=json.dumps(req), verify=False)
-            res = DT.resJsonEncode(res)
+            res = res.json()
+            LL.log(1, "获取对应历史月签到情况", res)
             monthSignList = list(res['datas']['rows'])
             # 遍历查找历史月中每日的签到情况
             monthSignList.sort(
@@ -114,7 +118,8 @@ class AutoSign:
                         url = f'{self.host}wec-counselor-sign-apps/stu/sign/detailSignInstance'
                         res = self.session.post(
                             url, headers=headers, data=json.dumps(historyTaskId), verify=False)
-                        res = DT.resJsonEncode(res)
+                        res = res.json()
+                        LL.log(1, "获取历史任务详情", res)
                         # 其他模拟请求
                         url = f'{self.host}wec-counselor-sign-apps/stu/sign/queryNotice'
                         self.session.post(url, headers=headers,
@@ -150,7 +155,7 @@ class AutoSign:
         headers['Content-Type'] = 'application/json;charset=UTF-8'
         res = self.session.post(url, headers=headers, data=json.dumps(
             self.taskInfo), verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         LL.log(1, '签到任务的详情', res['datas'])
         self.task = res['datas']
         return self.task
@@ -259,6 +264,11 @@ class AutoSign:
 
     def getSubmitExtension(self):
         '''生成各种额外参数'''
+
+        # 验证码识别
+        self.form.update(CpdailyTools.handleCaptcha(
+            self.host, self.session, self.userInfo['deviceId'], signType="sign"))
+
         extension = {
             "lon": self.form['longitude'],
             "lat": self.form['latitude'],
@@ -311,11 +321,11 @@ class AutoSign:
         LL.log(1, '即将提交的信息', headers, self.submitData)
         res = self.session.post(f'{self.host}wec-counselor-sign-apps/stu/sign/submitSign', headers=headers,
                                 data=json.dumps(self.submitData), verify=False)
-        res = DT.resJsonEncode(res)
-        LL.log(1, '提交后返回的信息', res['message'])
+        res = res.json()
+        LL.log(1, '提交后返回的信息', res)
         # 检查签到情况
         if self.getDetailTask()['signTime']:
-            self.userInfo['taskStatus'].code = 101
+            self.signTask_.code = 101
         else:
             raise TaskError(f'提交表单返回『{res}』但任务状态仍是未签到', 300, self.taskName)
         return '[%s]%s' % (res['message'], self.taskName)

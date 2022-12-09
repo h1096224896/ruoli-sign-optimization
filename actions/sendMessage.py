@@ -22,18 +22,19 @@ class SendMessage:
         self.rl = RlMessage(con.get('rl_email'),
                             con.get('rl_emailApiUrl'))
         self.iceCream = IceCream(con.get('iceCream_token'))
-        self.pp = Pushplus(con.get('pushplus_parameters'),
-                           con.get('pushplus_isNew'))
+        self.pp = Pushplus(con.get('pushplus_parameters'))
+        self.sc = Serverchan(con.get('severchan_sendkey'))
+        self.gotify = Gotify(con.get('gotify_url'), con.get('gotify_apptoken'))
         self.log_str = '推送情况\n'
 
     def send(self, msg='no msg', title='no title', attachments=()):
         try:
-            self.log_str += '\nQMSG酱|' + self.qmsg.send(msg)
+            self.log_str += '\nQMSG酱|' + self.qmsg.send(f"{title}\n{msg}")
         except Exception as e:
             self.log_str += '\nQMSG酱|出错|%s' % e
         try:
             self.log_str += '\nSMTP|' + \
-                self.smtp.sendmail(msg, title, attachments)
+                            self.smtp.sendmail(msg, title, attachments)
         except Exception as e:
             self.log_str += '\nSMTP|出错|%s' % e
         try:
@@ -41,17 +42,27 @@ class SendMessage:
         except Exception as e:
             self.log_str += '\n若离邮箱API|出错|%s' % e
         try:
-            self.log_str += '\nIceCream|' + self.iceCream.send(msg)
+            self.log_str += '\nIceCream|' + \
+                            self.iceCream.send(f"{title}\n{msg}")
         except Exception as e:
             self.log_str += '\nIceCream|出错|%s' % e
         try:
             self.log_str += '\nPushplus|' + self.pp.sendPushplus(msg, title)
         except Exception as e:
             self.log_str += '\nPushplus|出错|%s' % e
+        try:
+            self.log_str += '\nServerchan|' + self.sc.sendServerchan(msg, title)
+        except Exception as e:
+            self.log_str += '\nServerchan|出错|%s' % e
+        try:
+            self.log_str += '\nGotify|' + self.gotify.sendWithGotify(msg, title)
+        except Exception as e:
+            self.log_str += '\nGotify|出错|%s' % e
 
 
 class RlMessage:
     '''若离消息通知类'''
+
     # 初始化类
 
     def __init__(self, mail, apiUrl):
@@ -89,15 +100,12 @@ class RlMessage:
 class Pushplus:
     '''Pushplus推送类'''
 
-    def __init__(self, parameters: str, isNew):
+    def __init__(self, parameters: str):
         """
-        :param parameters: "xxx"形式的令牌 或者 "token=xxx&topic=xxx&yyy=xxx"形式参数列表
+        :params parameters: "xxx"形式的令牌 或者 "token=xxx&topic=xxx&yyy=xxx"形式参数列表
         """
         self.parameters = parameters
-        if isNew:
-            self.api = "https://www.pushplus.plus/send"
-        else:
-            self.api = "https://pushplus.hxtrip.com/send"
+        self.api = "https://www.pushplus.plus/send"
         self.configIsCorrect = self.isCorrectConfig()
 
     def isCorrectConfig(self):
@@ -109,9 +117,15 @@ class Pushplus:
         return 1
 
     def sendPushplus(self, msg, title):
-        msg = str(msg)
-        msg = msg.replace("\n", "</br>")
         title = str(title)
+
+        msgs = []
+        for seg in str(msg).split("\n"):
+            if seg:
+                if seg.startswith(">>"):
+                    seg = f"> {seg[2:]}\n"
+                msgs.append(seg)
+        msg = '\n'.join(msgs)
 
         if self.configIsCorrect:
             # 解析参数
@@ -141,14 +155,47 @@ class Pushplus:
             return '无效配置'
 
 
+class Serverchan:
+    '''ServerChan推送类'''
+
+    def __init__(self, sendkey: str):
+        """
+        :params sendkey: serverchan的SendKey,例如: SCT77****************S
+        """
+        try:
+            self.sendkey = sendkey if sendkey.startswith("SCT") else None
+        except Exception:
+            self.sendkey = None
+
+    def sendServerchan(self, msg, title):
+        if self.sendkey is None:
+            return '无效配置'
+
+        msgs = []
+        for seg in str(msg).split("\n"):
+            if seg:
+                if seg.startswith(">>"):
+                    seg = f"> {seg[2:]}\n"
+                msgs.append(seg)
+
+        params = {
+            'title': str(title),
+            'desp': '\n'.join(msgs)
+        }
+        # 准备发送
+        res = requests.post(
+            f"https://sctapi.ftqq.com/{self.sendkey}.send", params=params)
+        return "发送成功" if res.status_code == 200 else "发送失败"
+
+
 class Qmsg:
     '''Qmsg发送类'''
 
     def __init__(self, key: str, qq: str, isGroup: bool = False):
         """
-        :param key: qmsg密钥
-        :param qq: 接收消息的qq(多个qq以","分隔)
-        :param isGroup: 接收者是否为群
+        :params key: qmsg密钥
+        :params qq: 接收消息的qq(多个qq以","分隔)
+        :params isGroup: 接收者是否为群
         """
         self.key = key
         self.qq = qq
@@ -170,7 +217,7 @@ class Qmsg:
 
     def send(self, msg):
         """发送消息
-        :param msg: 要发送的消息(自动转为字符串类型)"""
+        :params msg: 要发送的消息(自动转为字符串类型)"""
         # msg处理
         msg = str(msg)
         # 替换数字(避开qmsg的屏蔽规则)
@@ -178,12 +225,12 @@ class Qmsg:
             msg = msg.replace(i, k)
         # 简单检查配置
         if not self.configIsCorrect:
-            return('无效配置')
+            return ('无效配置')
         else:
             # 开始推送
             sendtype = 'group/' if self.isGroup else 'send/'
-            res = requests.post(url='https://qmsg.zendee.cn/'+sendtype +
-                                self.key, data={'msg': msg, 'qq': self.qq})
+            res = requests.post(url='https://qmsg.zendee.cn/' + sendtype +
+                                    self.key, data={'msg': msg, 'qq': self.qq})
             return str(res)
 
 
@@ -192,11 +239,12 @@ class Smtp:
 
     def __init__(self, host: str, user: str, key: str, sender: str, senderName: str, receivers: list):
         """
-        :param host: SMTP的域名
-        :param user: 用户名
-        :param key: 用户的密钥
-        :param sender: 邮件发送者(邮箱)
-        :param receivers: 邮件接收者列表(邮箱)
+        :params host: SMTP域名
+        :params user: 用户账户
+        :params key: 用户密钥
+        :params sender: 邮件发送者(邮箱)
+        :params senderName: 发送者名称(可以随便填)
+        :params receivers: 邮件接收者列表(邮箱)
         """
         self.host = host
         self.user = user
@@ -210,7 +258,7 @@ class Smtp:
         # 简单检查邮箱地址或API地址是否合法
         if type(self.receivers) != list:
             return 0
-        for item in [self.host, self.user, self.key, self.sender]+self.receivers:
+        for item in [self.host, self.user, self.key, self.sender] + self.receivers:
             if not type(item) == str:
                 return 0
             if len(item) == 0:
@@ -221,9 +269,9 @@ class Smtp:
 
     def sendmail(self, msg, title='no title', attachments=()):
         """发送邮件
-        :param msg: 要发送的消息(自动转为字符串类型)
-        :param title: 邮件标题(自动转为字符串类型)
-        :param attachment: 附件元组，形式为((blob二进制文件,fileName文件名),(blob,fileName),...)"""
+        :params msg: 要发送的消息(自动转为字符串类型)
+        :params title: 邮件标题(自动转为字符串类型)
+        :params attachment: 附件元组，形式为((blob二进制文件,fileName文件名),(blob,fileName),...)"""
         msg = str(msg)
         msg = msg.replace("\n", "<br>")
         title = str(title)
@@ -247,7 +295,7 @@ class Smtp:
             smtpObj = smtplib.SMTP_SSL(self.host, 465)
             smtpObj.login(self.user, self.key)
             smtpObj.sendmail(self.sender, self.receivers, mail.as_string())
-            return("邮件发送成功")
+            return ("邮件发送成功")
 
 
 class IceCream:
@@ -255,7 +303,7 @@ class IceCream:
 
     def __init__(self, token: str):
         """
-        :param key: IceCream密钥
+        :params key: IceCream密钥
         """
         self.token = token
         self.configIsCorrect = self.isCorrectConfig()
@@ -271,15 +319,69 @@ class IceCream:
 
     def send(self, msg):
         """发送消息
-        :param msg: 要发送的消息(自动转为字符串类型)
+        :params msg: 要发送的消息(自动转为字符串类型)
         """
         # msg处理
         msg = str(msg)
         # 简单检查配置
         if not self.configIsCorrect:
-            return('无效配置')
+            return ('无效配置')
         else:
             # 开始推送
             res = requests.post(
                 url=f'https://ice.ruoli.cc/api/send/{self.token}', data={'msg': msg})
             return str(res.json()['msg'])
+
+
+class Gotify:
+    '''Gotify推送类'''
+
+    # Gotify 是一款可以自行搭建的自主推送服务
+
+    def __init__(self, api_url: str, token: str):
+        """
+        :params api_url: Gotify 的 API 地址
+        :params token： 从 Gotify 创建的 token
+        """
+        self.gotify_url = api_url
+        self.gotify_apptoken = token  # Gotify 分为 app token 和 client token，请勿混淆
+        self.configIsCorrect = self.isCorrectConfig()
+
+    def isCorrectConfig(self):
+        """简单检查配置是否合法"""
+        if type(self.gotify_url) != str:
+            return 0
+        elif type(self.gotify_apptoken) != str:
+            return 0
+        else:
+            return 1
+
+    def sendWithGotify(self, msg, title):
+        if self.gotify_apptoken is None:
+            return '无效配置'
+
+        # 简单检查配置
+        if not self.configIsCorrect:
+            return '无效配置'
+
+        msgs = []
+        for seg in str(msg).split("\n"):
+            if seg:
+                if seg.startswith(">>"):
+                    seg = f"> {seg[2:]}\n"
+                msgs.append(seg)
+
+        params = {
+            "extras": {
+                "client::display": {
+                    "contentType": "text/markdown"
+                }
+            },
+            "title": str(title),
+            "message": '\n'.join(msgs),
+            "priority": 2
+        }
+        # 准备发送
+        res = requests.post(
+            f"{self.gotify_url}/message?token={self.gotify_apptoken}", json=params)
+        return "发送成功" if res.status_code == 200 else "发送失败"

@@ -1,10 +1,13 @@
 import time
+import traceback
 from typing import Sequence
+from io import TextIOWrapper
 import requests
 import yaml
 import math
 import random
 import os
+import sys
 from Crypto.Cipher import AES
 from pyDes import des, CBC, PAD_PKCS5
 import base64
@@ -17,6 +20,113 @@ from requests_toolbelt import MultipartEncoder
 import datetime
 
 import checkRepositoryVersion
+
+
+class reqResponse(requests.Response):
+    '''requests.reqResponse的子类'''
+
+    def __init__(self, res: requests.Response):
+        self.__dict__.update(res.__dict__)
+
+    def json(self, *args, **kwargs):
+        '''当解析失败的时候, 会print出响应内容'''
+        try:
+            return super(reqResponse, self).json(*args, **kwargs)
+        except Exception as e:
+            raise Exception(
+                f'响应内容以json格式解析失败({e})，响应内容:\n\n{self.text}')
+
+
+class reqSession(requests.Session):
+    '''requests.Session的子类'''
+
+    def request(self, *args, **kwargs):
+        '''增添了请求的默认超时时间, 将返回值转换为reqResponse'''
+        kwargs.setdefault('timeout', (10, 30))
+        res = super(reqSession, self).request(*args, **kwargs)
+        return reqResponse(res)
+
+
+class FileOut:
+    '''
+    代替stdout和stderr, 使print同时输出到文件和终端中。
+    start()方法可以直接用自身(self)替换stdout和stderr
+    close()方法可以还原stdout和stderr
+    '''
+    stdout = sys.stdout
+    stderr = sys.stderr
+
+    def __init__(self, logPath: str = None):
+        '''
+        初始化
+        :params logDir: 输出文件(如果路径不存在自动创建), 如果为空则不输出到文件
+        '''
+        self.log: str = ""  # 同时将所有输出记录到log字符串中
+        self.logFile: TextIOWrapper = None
+        self.setFileOut(logPath)
+
+    def setFileOut(self, path: str = None):
+        '''
+        设置日志输出文件
+        :params path: 日志输出文件路径, 如果为空则取消日志文件输出
+        '''
+        # 关闭旧文件
+        if self.logFile:
+            self.logFile.close()
+            self.logFile = None
+
+        # 更新日志文件输出
+        if path:
+            try:
+                path = os.path.abspath(path)
+                logDir = os.path.dirname(path)
+                if not os.path.isdir(logDir):
+                    os.makedirs(logDir)
+                self.logFile = open(path, "w+", encoding="utf-8")
+                self.logFile.write(self.log)
+                self.logFile.flush()
+                return
+            except Exception as e:
+                LL.log(2, f"设置日志文件输出失败, 错误信息: [{e}]")
+                self.logFile = None
+                return
+        else:
+            self.logFile = None
+            return
+
+    def start(self):
+        '''开始替换stdout和stderr'''
+        if type(sys.stdout) != FileOut and type(sys.stderr) != FileOut:
+            sys.stdout = self
+            sys.stderr = self
+        else:
+            raise Exception("sysout/syserr已被替换为FileOut")
+
+    def write(self, str_):
+        r'''
+        :params str: print传来的字符串
+        :print(s)等价于sys.stdout.write(s+"\n")
+        '''
+        str_ = str(str_)
+        self.log += str_
+        if self.logFile:
+            self.logFile.write(str_)
+        FileOut.stdout.write(str_)
+        self.flush()
+
+    def flush(self):
+        '''刷新缓冲区'''
+        self.stdout.flush()
+        if self.logFile:
+            self.logFile.flush()
+
+    def close(self):
+        '''关闭'''
+        if self.logFile:
+            self.logFile.close()
+        self.log = ""
+        sys.stdout = FileOut.stdout
+        sys.stderr = FileOut.stderr
 
 
 class TaskError(Exception):
@@ -123,11 +233,13 @@ class TT:
 
 class LL:
     '''lite log'''
-    prefix = checkRepositoryVersion.checkCodeVersion()
+    prefix = checkRepositoryVersion.getCodeVersion()
     startTime = TT.startTime
     log_list = []
     printLevel = 0
     logTypeDisplay = ['debug', 'info', 'warn', 'error', 'critical']
+    msgOut: FileOut = FileOut()
+    msgOut.start()
 
     @staticmethod
     def formatLog(logType: str, args):
@@ -257,14 +369,14 @@ class CpdailyTools:
             "output": "json", "address": address, "ak": baiduMap_ak}
         res = requests.get(
             url, headers=headers, params=params, verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         lon = res['result']['location']['lng']
         lat = res['result']['location']['lat']
         return (lon, lat)
 
     @staticmethod
     def baiduReverseGeocoding(lon: float, lat: float):
-        '''地址转坐标'''
+        '''坐标转地址'''
         # 获取百度地图API的密钥
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:50.0) Gecko/20100101 Firefox/50.0'}
@@ -276,7 +388,7 @@ class CpdailyTools:
         params = {
             "output": "json", "location": "%f,%f" % (lon, lat), "ak": baiduMap_ak}
         res = requests.get(url, headers=headers, params=params, verify=False)
-        res = DT.resJsonEncode(res)
+        res = res.json()
         address = res['result']['formatted_address']
         return address
 
@@ -285,7 +397,7 @@ class CpdailyTools:
         '''上传图片到阿里云oss'''
         res = session.post(url=url, headers={'content-type': 'application/json'}, data=json.dumps({'fileType': 1}),
                            verify=False)
-        datas = DT.resJsonEncode(res).get('datas')
+        datas = res.json().get('datas')
         fileName = datas.get('fileName')
         policy = datas.get('policy')
         accessKeyId = datas.get('accessid')
@@ -316,6 +428,102 @@ class CpdailyTools:
         photoUrl = res.json().get('datas')
         return photoUrl
 
+    @staticmethod
+    def handleCaptcha(host: str, session: reqSession, deviceId: str, maxTry=3, signType: str = "attendance"):
+        '''
+        图形验证码处理
+        :returns dict:用于更新表单(self.form)的字典(如果不需要验证码返回{}, 如果需要返回)
+        '''
+        error = None  # 如果发生异常进行重试, 则保留错误信息
+        headers = session.headers.copy()
+        # ====================检查是否需要验证码====================
+        if signType == "attendance":
+            have_cap = f"{host}wec-counselor-attendance-apps/student/attendance/checkValidation"
+        elif signType == "sign":
+            have_cap = f"{host}wec-counselor-sign-apps/stu/sign/checkValidation"
+        elif signType == "collector":
+            have_cap = f"{host}wec-counselor-collector-apps/stu/collector/checkValidation"
+        else:
+            raise Exception("未知signType")
+        data = {'deviceId': deviceId}
+        headers.update({
+            'CpdailyStandAlone': '0',
+            'extension': '1',
+            'Content-Type': 'application/json; charset=utf-8',
+        })
+        res = session.post(
+            url=have_cap, data=json.dumps(data), headers=headers)
+        res = res.json()
+        haveCap_data = res['datas']
+        LL.log(1, "检查是否需要填写验证码", haveCap_data)
+        if not haveCap_data['validation']:
+            '''如果不需要填写验证码, 则直接返回'''
+            return {}
+
+        for try_ in range(maxTry):
+            LL.log(1, f"正在进行第{try_+1}次验证码识别尝试")
+            # ====================获取验证码====================
+            headers.update({
+                'Content-Type': 'multipart/form-data; boundary=----WebKitFormBoundaryBlRdUZvbYBzP5FaF',
+                'deviceId': deviceId,
+            })
+            url = f"{host}captcha-open-api/v1/captcha/create/scenesImage"
+            data = [
+                ("accountKey", haveCap_data['accountKey']),
+                ("sceneCode", haveCap_data['sceneCode']),
+                ("tenantId", haveCap_data['tenantId']),
+                ("userId", haveCap_data['userId'])
+            ]
+
+            res = session.post(url=url, data=MultipartEncoder(
+                data, boundary="----WebKitFormBoundaryBlRdUZvbYBzP5FaF"), headers=headers)
+            capCode = res.json()
+            LL.log(1, "获取验证码", capCode)
+
+            # ====================识别验证码====================
+
+            event = {
+                "msg": f"请求图片验证码识别",  # 触发消息
+                "from": "liteTools.handleCaptcha",  # 触发位置
+                "code": 300,
+            }
+            handleCaptchaResult = UserDefined.trigger(
+                event, context={"capcode": capCode})
+
+            hc_err = handleCaptchaResult["exceptError"]
+            if hc_err:
+                '''如果报错'''
+                error = hc_err
+                LL.log(3, f"验证码识别出错: {hc_err}")
+                RT.randomSleep(timeRange=(5, 6))  # 刷新验证码
+                continue
+            else:
+                '''如果执行正常'''
+                answerkey = handleCaptchaResult["result"]
+
+            # ====================提交验证码====================
+            url = f"{host}captcha-open-api/v1/captcha/validate/scenesImage"
+            data = [
+                ("accountKey", haveCap_data['accountKey']),
+                ("sceneCode", haveCap_data['sceneCode']),
+                ("tenantId", haveCap_data['tenantId']),
+                ("userId", haveCap_data['userId']),
+                ("scenesImageCode", capCode["result"]['code'])
+            ]
+            data.extend([('scenesImageCodes', i) for i in answerkey])
+            res = session.post(url=url, data=MultipartEncoder(
+                data, boundary="----WebKitFormBoundaryBlRdUZvbYBzP5FaF"), headers=headers)
+            res = res.json()
+            LL.log(1, "提交验证码", res)
+            if not res['result']:
+                LL.log(3, "验证码提交出错")
+                RT.randomSleep(timeRange=(16, 20))  # 验证码获取间隔时间为15秒
+                continue
+            return {"ticket": res['result']}
+        else:
+            '''重试次数达到上限'''
+            raise Exception(f"验证码处理失败, 错误信息: \n『{error}』")
+
 
 class NT:
     '''NetTools'''
@@ -323,7 +531,7 @@ class NT:
     def isDisableProxies(proxies: dict):
         '''
         检查代理是否可用
-        :return 如果代理正常返回0，代理异常返回1
+        :return 如果代理正常返回0, 代理异常返回1
         '''
         try:
             requests.get(url='https://www.baidu.com/',
@@ -467,7 +675,7 @@ class RT:
             try:
                 response = requests.get(
                     url=url, headers=headers, timeout=(10, 20))
-            except requests.exceptions.ConnectionError:
+            except requests.exceptions.ConnectionError as e:
                 LL.log(1, f'在线图片[{url}]下载失败，错误原因:\n{e}\
                     \n可能造成此问题的原因有:\
                     \n1. 图片链接失效(请自行验证链接是否可用)\
@@ -557,16 +765,7 @@ class DT:
             yaml.dump(item, f, allow_unicode=True)
 
     @staticmethod
-    def resJsonEncode(res):
-        '''响应内容的json解析函数(换而言之，就是res.json()的小优化版本)'''
-        try:
-            return res.json()
-        except Exception as e:
-            raise Exception(
-                f'响应内容以json格式解析失败({e})，响应内容:\n\n{res.text}')
-
-    @staticmethod
-    def formatStrList(item):
+    def formatStrList(item, returnSuperStr=False):
         '''字符串序列或字符串 格式化为 字符串列表。
         :feature: 超级字符串会被格式化为字符串
         :feature: 空值会被格式化为 空列表'''
@@ -585,7 +784,10 @@ class DT:
         # 格式化超级字符串
         for i, v in enumerate(strList):
             if isinstance(v, str) or isinstance(v, dict) or v == SuperString:
-                strList[i] = str(SuperString(v))
+                if returnSuperStr:
+                    strList[i] = SuperString(v)
+                else:
+                    strList[i] = str(SuperString(v))
         return strList
 
     @staticmethod
@@ -688,6 +890,25 @@ class HSF:
         hashObj.update(bstr)
         return hashObj.hexdigest()
 
+    @staticmethod
+    def bytesHash(bytes_: bytes, hash_type):
+        """计算字节串哈希
+        :param bytes_: 字节串
+        :param hash_type: 哈希算法类型
+            1       sha-1
+            224     sha-224
+            256      sha-256
+            384     sha-384
+            512     sha-512
+            5       md5
+            3.256   sha3-256
+            3.384   sha3-384
+            3.512   sha3-512
+        """
+        hashObj = HSF.geneHashObj(hash_type)
+        hashObj.update(bytes_)
+        return hashObj.hexdigest()
+
 
 class ST:
     '''StringTools'''
@@ -710,6 +931,19 @@ class ST:
     def notionStr(s: str):
         '''让输入的句子非常非常显眼'''
         return ('↓'*50 + '看这里' + '↓'*50 + '\n')*5 + s + ('\n' + '↑'*50 + '看这里' + '↑'*50)*5
+
+    @staticmethod
+    def stringFormating(str_: str, params: dict):
+        '''
+        接受字符串和一个参数字典, 将字符串中{key}形式的部分, 利用params格式化。返回一个字符串。
+        本函数类似于str.format()与「lambda str_, params:str_.format(**params)」功能相同, 但当找不到对应的key时不会报错而是会跳过。
+        '''
+        def formating(m):
+            '''匹配a-e样式的字符串替换为a,b,c,d,e样式'''
+            key = m.group()[1:-1]
+            return str(params.get(key, f"{'{'}{key}{'}'}"))
+        str_ = re.sub(r"\{[^{}]*?\}", formating, str_)
+        return str_
 
 
 class SuperString:
@@ -768,8 +1002,11 @@ class SuperString:
         return self.fStr
 
 
-class ProxyGet():
-    def __init__(self, config):
+class ProxyGet:
+    def __init__(self, config: dict):
+        """
+        params config: dict|str|none
+        """
         self.config = config
         self.proxy = {}
         self.type = ""
@@ -835,6 +1072,7 @@ class ProxyGet():
                         'https': proxyUrl
                     }
                     LL.log(1, f"通过熊猫代理API获取到代理[{proxy}]")
+                    time.sleep(1)
                     if NT.isDisableProxies(proxy):
                         raise Exception(f"通过熊猫代理API获取到的代理不可用[{proxy}]")
                     LL.log(1, f"代理[{proxy}]可用")
@@ -848,3 +1086,62 @@ class ProxyGet():
                     else:
                         time.sleep(2)  # 熊猫代理最快一秒提取一次IP
                         pass
+
+
+class UserDefined:
+    '''UserDefined接口, 用于触发用户自定义函数(userDefined.py)'''
+    _userIndex = None
+
+    # trigger()的event参数模板
+    {
+        "msg": "",  # 触发消息
+        "from": "",  # 触发位置
+        "code": 101,  # 事件代码
+    }
+
+    # event里的code含义
+    {
+        100: "全局任务开始",
+        101: "全局任务结束",
+        200: "局部任务开始",
+        201: "局部任务结束",
+        300: "图形验证码识别",
+    }
+
+    @classmethod
+    def trigger(cla, event: dict, context: dict):
+        '''
+        触发用户自定义函数
+        :param event: 事件
+        :param context: 参数
+        :returns :返回一个字典
+            {
+                "result": ...,  # 返回结果
+                "exceptError": ...,  # 捕获的异常
+            }
+        '''
+        LL.log(
+            1, f"收到事件「{event.get('msg')}({event.get('code')})」, 尝试触发用户自定义函数", "event", event, "context", context)
+        # ==========返回值模板==========
+        result = {
+            "result": None,  # 返回结果
+            "exceptError": None,  # 捕获的异常
+        }
+        # ==========检查用户模块==========
+        if not cla._userIndex:
+            try:
+                from userDefined import index
+                cla._userIndex = index
+            except Exception as e:
+                LL.log(2, "用户自定义函数导入失败")
+                result["exceptError"] = e
+                return result
+        # ==========开始执行==========
+        try:
+            result["result"] = cla._userIndex(event, context)
+            LL.log(1, "用户自定义函数执行完毕, 返回值: ", result)
+            return result
+        except Exception as e:
+            LL.log(3, f"用户自定义函数执行出错, 错误信息『「{e}」\n{traceback.format_exc()}』")
+            result["exceptError"] = e
+            return result
